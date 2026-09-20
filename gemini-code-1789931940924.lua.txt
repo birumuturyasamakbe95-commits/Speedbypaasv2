@@ -1,0 +1,474 @@
+--[[
+	CAPO X NIGHTHUB V2 AUTO STEAL
+	Siyah Tema & Sarı / Beyaz Yazı Stili
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+pcall(function()
+	if PlayerGui:FindFirstChild("CapoXNighthubUI") then
+		PlayerGui.CapoXNighthubUI:Destroy()
+	end
+end)
+
+-- ===================== STATE =====================
+local State = {
+	enabled = false,
+	radius = 62,
+	mode = "Normal",
+	semiPause = 75,
+	locked = false,
+	dragging = false,
+	minimized = false,
+}
+
+-- ===================== GUI =====================
+local CapoXNighthubUI = Instance.new("ScreenGui")
+CapoXNighthubUI.Name = "CapoXNighthubUI"
+CapoXNighthubUI.IgnoreGuiInset = true
+CapoXNighthubUI.ResetOnSpawn = false
+CapoXNighthubUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+CapoXNighthubUI.Parent = PlayerGui
+
+local MainContainer = Instance.new("Frame")
+MainContainer.Name = "MainContainer"
+MainContainer.Active = true
+MainContainer.ClipsDescendants = true
+MainContainer.Position = UDim2.new(0.5, -132, 0, 16)
+MainContainer.Size = UDim2.new(0, 264, 0, 110)
+MainContainer.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+MainContainer.BorderSizePixel = 0
+MainContainer.Parent = CapoXNighthubUI
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 10)
+UICorner.Parent = MainContainer
+
+local UIStroke = Instance.new("UIStroke")
+UIStroke.Color = Color3.fromRGB(255, 255, 0)
+UIStroke.Thickness = 1.5
+UIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+UIStroke.Parent = MainContainer
+
+local TopBar = Instance.new("Frame")
+TopBar.Name = "TopBar"
+TopBar.ZIndex = 5
+TopBar.ClipsDescendants = true
+TopBar.Size = UDim2.new(1, 0, 0, 32)
+TopBar.BackgroundTransparency = 1
+TopBar.BorderSizePixel = 0
+TopBar.Parent = MainContainer
+
+local ProgressTrack = Instance.new("Frame")
+ProgressTrack.Name = "ProgressTrack"
+ProgressTrack.ZIndex = 2
+ProgressTrack.Position = UDim2.new(0, 5, 0, 4)
+ProgressTrack.Size = UDim2.new(1, -10, 0, 24)
+ProgressTrack.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ProgressTrack.BorderSizePixel = 0
+ProgressTrack.Parent = TopBar
+
+local UICorner2 = Instance.new("UICorner")
+UICorner2.CornerRadius = UDim.new(0, 6)
+UICorner2.Parent = ProgressTrack
+
+local Fill = Instance.new("Frame")
+Fill.Name = "Fill"
+Fill.ZIndex = 3
+Fill.Size = UDim2.new(0, 0, 1, 0)
+Fill.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Fill.BorderSizePixel = 0
+Fill.Parent = ProgressTrack
+
+local UICorner3 = Instance.new("UICorner")
+UICorner3.CornerRadius = UDim.new(0, 6)
+UICorner3.Parent = Fill
+
+local TextLabel = Instance.new("TextLabel")
+TextLabel.ZIndex = 6
+TextLabel.Position = UDim2.new(0, 10, 0, 4)
+TextLabel.Size = UDim2.new(0, 48, 0, 10)
+TextLabel.BackgroundTransparency = 1
+TextLabel.Text = "0 FPS"
+TextLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+TextLabel.Font = Enum.Font.GothamBold
+TextLabel.TextXAlignment = Enum.TextXAlignment.Left
+TextLabel.Parent = TopBar
+
+local TextLabel2 = Instance.new("TextLabel")
+TextLabel2.ZIndex = 6
+TextLabel2.Position = UDim2.new(0, 10, 0, 15)
+TextLabel2.Size = UDim2.new(0, 48, 0, 10)
+TextLabel2.BackgroundTransparency = 1
+TextLabel2.Text = "0ms"
+TextLabel2.TextColor3 = Color3.fromRGB(255, 255, 255)
+TextLabel2.Font = Enum.Font.GothamBold
+TextLabel2.TextXAlignment = Enum.TextXAlignment.Left
+TextLabel2.Parent = TopBar
+
+local TextLabel3 = Instance.new("TextLabel")
+TextLabel3.ZIndex = 6
+TextLabel3.Position = UDim2.new(0, 40, 0, 0)
+TextLabel3.Size = UDim2.new(1, -80, 1, 0)
+TextLabel3.BackgroundTransparency = 1
+TextLabel3.Text = "Capo X Nighthub V2 Auto steal"
+TextLabel3.TextColor3 = Color3.fromRGB(255, 255, 0)
+TextLabel3.TextSize = 11
+TextLabel3.Font = Enum.Font.GothamBold
+TextLabel3.TextStrokeTransparency = 0.6
+TextLabel3.Parent = TopBar
+
+local ArrowButton = Instance.new("TextButton")
+ArrowButton.Name = "ArrowButton"
+ArrowButton.ZIndex = 10
+ArrowButton.Position = UDim2.new(1, -32, 0.5, -14)
+ArrowButton.Size = UDim2.new(0, 28, 0, 28)
+ArrowButton.BackgroundTransparency = 1
+ArrowButton.Text = "▲"
+ArrowButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ArrowButton.TextSize = 11
+ArrowButton.Font = Enum.Font.GothamBold
+ArrowButton.Parent = TopBar
+
+local LockButton = Instance.new("TextButton")
+LockButton.Name = "LockButton"
+LockButton.ZIndex = 10
+LockButton.Position = UDim2.new(0, 174, 0, 45)
+LockButton.Size = UDim2.new(0, 74, 0, 24)
+LockButton.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+LockButton.Text = "DRAG"
+LockButton.TextColor3 = Color3.fromRGB(255, 255, 0)
+LockButton.TextSize = 10
+LockButton.Font = Enum.Font.GothamBold
+LockButton.Parent = MainContainer
+
+local UICorner4 = Instance.new("UICorner")
+UICorner4.CornerRadius = UDim.new(0, 4)
+UICorner4.Parent = LockButton
+
+local UIStrokeLock = Instance.new("UIStroke")
+UIStrokeLock.Color = Color3.fromRGB(255, 255, 255)
+UIStrokeLock.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+UIStrokeLock.Parent = LockButton
+
+local Panel = Instance.new("Frame")
+Panel.Name = "Panel"
+Panel.ZIndex = 5
+Panel.Position = UDim2.new(0, 5, 0, 34)
+Panel.Size = UDim2.new(1, -10, 0, 72)
+Panel.BackgroundTransparency = 1
+Panel.BorderSizePixel = 0
+Panel.Parent = MainContainer
+
+local TextLabel4 = Instance.new("TextLabel")
+TextLabel4.ZIndex = 6
+TextLabel4.Position = UDim2.new(0, 7, 0, 0)
+TextLabel4.Size = UDim2.new(0, 40, 0, 10)
+TextLabel4.BackgroundTransparency = 1
+TextLabel4.Text = "RADIUS"
+TextLabel4.TextColor3 = Color3.fromRGB(255, 255, 255)
+TextLabel4.Font = Enum.Font.GothamBold
+TextLabel4.TextXAlignment = Enum.TextXAlignment.Left
+TextLabel4.Parent = Panel
+
+local RadiusInput = Instance.new("TextBox")
+RadiusInput.Name = "RadiusInput"
+RadiusInput.ZIndex = 6
+RadiusInput.Position = UDim2.new(0, 5, 0, 11)
+RadiusInput.Size = UDim2.new(0, 74, 0, 24)
+RadiusInput.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+RadiusInput.BorderSizePixel = 0
+RadiusInput.Text = "62"
+RadiusInput.TextColor3 = Color3.fromRGB(255, 255, 0)
+RadiusInput.TextSize = 10
+RadiusInput.Font = Enum.Font.GothamBold
+RadiusInput.PlaceholderText = "Radius"
+RadiusInput.Parent = Panel
+
+local UICorner5 = Instance.new("UICorner")
+UICorner5.CornerRadius = UDim.new(0, 5)
+UICorner5.Parent = RadiusInput
+
+local UIStroke2 = Instance.new("UIStroke")
+UIStroke2.Color = Color3.fromRGB(255, 255, 255)
+UIStroke2.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+UIStroke2.Parent = RadiusInput
+
+local ModeContainer = Instance.new("Frame")
+ModeContainer.Name = "ModeContainer"
+ModeContainer.ZIndex = 6
+ModeContainer.Position = UDim2.new(0, 0, 0, 40)
+ModeContainer.Size = UDim2.new(1, 0, 0, 30)
+ModeContainer.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ModeContainer.BorderSizePixel = 0
+ModeContainer.Parent = Panel
+
+local UICorner6 = Instance.new("UICorner")
+UICorner6.CornerRadius = UDim.new(0, 7)
+UICorner6.Parent = ModeContainer
+
+local UIStroke3 = Instance.new("UIStroke")
+UIStroke3.Color = Color3.fromRGB(255, 255, 255)
+UIStroke3.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+UIStroke3.Parent = ModeContainer
+
+local ModeBtn_Normal = Instance.new("TextButton")
+ModeBtn_Normal.Name = "ModeBtn_Normal"
+ModeBtn_Normal.ZIndex = 8
+ModeBtn_Normal.Position = UDim2.new(0, 3, 0.5, -11)
+ModeBtn_Normal.Size = UDim2.new(0, 78, 0, 24)
+ModeBtn_Normal.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ModeBtn_Normal.BorderSizePixel = 0
+ModeBtn_Normal.Text = "Normal"
+ModeBtn_Normal.TextColor3 = Color3.fromRGB(255, 255, 0)
+ModeBtn_Normal.TextSize = 11
+ModeBtn_Normal.Font = Enum.Font.GothamBold
+ModeBtn_Normal.Parent = ModeContainer
+
+local UICorner7 = Instance.new("UICorner")
+UICorner7.CornerRadius = UDim.new(0, 5)
+UICorner7.Parent = ModeBtn_Normal
+
+local UIStroke4 = Instance.new("UIStroke")
+UIStroke4.Color = Color3.fromRGB(255, 255, 0)
+UIStroke4.Thickness = 1.2
+UIStroke4.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+UIStroke4.Parent = ModeBtn_Normal
+
+local ModeBtn_Semi = Instance.new("TextButton")
+ModeBtn_Semi.Name = "ModeBtn_Semi"
+ModeBtn_Semi.ZIndex = 8
+ModeBtn_Semi.Position = UDim2.new(0, 85, 0.5, -11)
+ModeBtn_Semi.Size = UDim2.new(0, 78, 0, 24)
+ModeBtn_Semi.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ModeBtn_Semi.BorderSizePixel = 0
+ModeBtn_Semi.Text = "Semi"
+ModeBtn_Semi.TextColor3 = Color3.fromRGB(255, 255, 255)
+ModeBtn_Semi.TextSize = 11
+ModeBtn_Semi.Font = Enum.Font.GothamBold
+ModeBtn_Semi.Parent = ModeContainer
+
+local UICorner8 = Instance.new("UICorner")
+UICorner8.CornerRadius = UDim.new(0, 5)
+UICorner8.Parent = ModeBtn_Semi
+
+local UIStroke5 = Instance.new("UIStroke")
+UIStroke5.Color = Color3.fromRGB(255, 255, 255)
+UIStroke5.Thickness = 1.2
+UIStroke5.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+UIStroke5.Parent = ModeBtn_Semi
+
+local ModeBtn_Semi_Normal = Instance.new("TextButton")
+ModeBtn_Semi_Normal.Name = "ModeBtn_Semi Normal"
+ModeBtn_Semi_Normal.ZIndex = 8
+ModeBtn_Semi_Normal.Position = UDim2.new(0, 167, 0.5, -11)
+ModeBtn_Semi_Normal.Size = UDim2.new(0, 78, 0, 24)
+ModeBtn_Semi_Normal.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ModeBtn_Semi_Normal.BorderSizePixel = 0
+ModeBtn_Semi_Normal.Text = "Semi Normal"
+ModeBtn_Semi_Normal.TextColor3 = Color3.fromRGB(255, 255, 0)
+ModeBtn_Semi_Normal.TextSize = 11
+ModeBtn_Semi_Normal.Font = Enum.Font.GothamBold
+ModeBtn_Semi_Normal.Parent = ModeContainer
+
+local UICorner9 = Instance.new("UICorner")
+UICorner9.CornerRadius = UDim.new(0, 5)
+UICorner9.Parent = ModeBtn_Semi_Normal
+
+local UIStroke6 = Instance.new("UIStroke")
+UIStroke6.Color = Color3.fromRGB(255, 255, 0)
+UIStroke6.Thickness = 1.2
+UIStroke6.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+UIStroke6.Parent = ModeBtn_Semi_Normal
+
+local TextLabel5 = Instance.new("TextLabel")
+TextLabel5.ZIndex = 6
+TextLabel5.Position = UDim2.new(0, 80, 0, 0)
+TextLabel5.Size = UDim2.new(0, 74, 0, 10)
+TextLabel5.BackgroundTransparency = 1
+TextLabel5.Text = "SEMI NORMAL PAUSE "
+TextLabel5.TextColor3 = Color3.fromRGB(255, 255, 0)
+TextLabel5.Font = Enum.Font.GothamBold
+TextLabel5.TextXAlignment = Enum.TextXAlignment.Left
+TextLabel5.Parent = Panel
+
+local TextBox = Instance.new("TextBox")
+TextBox.Name = "TextBox"
+TextBox.ZIndex = 6
+TextBox.Position = UDim2.new(0, 86, 0, 11)
+TextBox.Size = UDim2.new(0, 74, 0, 24)
+TextBox.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+TextBox.BorderSizePixel = 0
+TextBox.Text = "75"
+TextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+TextBox.TextSize = 10
+TextBox.Font = Enum.Font.GothamBold
+TextBox.PlaceholderText = "Pause %"
+TextBox.Parent = Panel
+
+local UICorner10 = Instance.new("UICorner")
+UICorner10.CornerRadius = UDim.new(0, 5)
+UICorner10.Parent = TextBox
+
+local UIStroke7 = Instance.new("UIStroke")
+UIStroke7.Color = Color3.fromRGB(255, 255, 255)
+UIStroke7.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+UIStroke7.Parent = TextBox
+
+-- ===================== LOGIQUE =====================
+
+local function updateModeVisual()
+	ModeBtn_Normal.TextColor3 = State.mode == "Normal" and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(255, 255, 255)
+	UIStroke4.Color = State.mode == "Normal" and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(255, 255, 255)
+
+	ModeBtn_Semi.TextColor3 = State.mode == "Semi" and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(255, 255, 255)
+	UIStroke5.Color = State.mode == "Semi" and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(255, 255, 255)
+
+	ModeBtn_Semi_Normal.TextColor3 = State.mode == "Semi Normal" and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(255, 255, 255)
+	UIStroke6.Color = State.mode == "Semi Normal" and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(255, 255, 255)
+end
+
+local function setEnabled(on)
+	State.enabled = on
+	if on then
+		TweenService:Create(Fill, TweenInfo.new(0.35), {Size = UDim2.new(1, 0, 1, 0)}):Play()
+	else
+		TweenService:Create(Fill, TweenInfo.new(0.25), {Size = UDim2.new(0, 0, 1, 0)}):Play()
+	end
+end
+
+TextLabel3.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		setEnabled(not State.enabled)
+	end
+end)
+
+ProgressTrack.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		setEnabled(not State.enabled)
+	end
+end)
+
+ModeBtn_Normal.MouseButton1Click:Connect(function()
+	State.mode = "Normal"
+	updateModeVisual()
+end)
+ModeBtn_Semi.MouseButton1Click:Connect(function()
+	State.mode = "Semi"
+	updateModeVisual()
+end)
+ModeBtn_Semi_Normal.MouseButton1Click:Connect(function()
+	State.mode = "Semi Normal"
+	updateModeVisual()
+end)
+
+RadiusInput.FocusLost:Connect(function()
+	local n = tonumber(RadiusInput.Text)
+	if n then State.radius = math.clamp(n, 5, 300) end
+	RadiusInput.Text = tostring(State.radius)
+end)
+
+TextBox.FocusLost:Connect(function()
+	local n = tonumber(TextBox.Text)
+	if n then State.semiPause = math.clamp(n, 0, 100) end
+	TextBox.Text = tostring(State.semiPause)
+end)
+
+LockButton.MouseButton1Click:Connect(function()
+	State.locked = not State.locked
+	LockButton.Text = State.locked and "LOCKED" or "DRAG"
+	LockButton.TextColor3 = State.locked and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(255, 255, 0)
+end)
+
+ArrowButton.MouseButton1Click:Connect(function()
+	State.minimized = not State.minimized
+	if State.minimized then
+		TweenService:Create(MainContainer, TweenInfo.new(0.22), {Size = UDim2.new(0, 264, 0, 32)}):Play()
+		ArrowButton.Text = "▼"
+		Panel.Visible = false
+		LockButton.Visible = false
+	else
+		TweenService:Create(MainContainer, TweenInfo.new(0.22), {Size = UDim2.new(0, 264, 0, 110)}):Play()
+		ArrowButton.Text = "▲"
+		Panel.Visible = true
+		LockButton.Visible = true
+	end
+end)
+
+local dragStart, startPos
+TopBar.InputBegan:Connect(function(input)
+	if State.locked then return end
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		State.dragging = true
+		dragStart = input.Position
+		startPos = MainContainer.Position
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		State.dragging = false
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if not State.dragging or State.locked then return end
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		local delta = input.Position - dragStart
+		MainContainer.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+-- ===================== AUTO STEAL =====================
+local function trySteal()
+	for _, name in ipairs({"Steal", "StealBrainrot", "Grab", "Take", "Collect", "StealItem", "StealObject"}) do
+		local remote = ReplicatedStorage:FindFirstChild(name, true)
+		if remote and remote:IsA("RemoteEvent") then
+			pcall(function() remote:FireServer() end)
+		end
+	end
+end
+
+local lastSteal = 0
+RunService.Heartbeat:Connect(function()
+	if not State.enabled then return end
+
+	local now = tick()
+	local delay = 0.12
+
+	if State.mode == "Semi" then
+		delay = 0.32
+	elseif State.mode == "Semi Normal" then
+		if (now % 1) * 100 < State.semiPause then
+			return
+		end
+		delay = 0.20
+	end
+
+	if now - lastSteal < delay then return end
+	lastSteal = now
+
+	trySteal()
+end)
+
+local frames, lastT = 0, tick()
+RunService.RenderStepped:Connect(function()
+	frames += 1
+	if tick() - lastT >= 1 then
+		TextLabel.Text = frames .. " FPS"
+		frames = 0
+		lastT = tick()
+		local ping = math.floor(LocalPlayer:GetNetworkPing() * 1000)
+		TextLabel2.Text = ping .. "ms"
+	end
+end)
+
+updateModeVisual()
+print("[Capo X Nighthub V2 Auto steal] Loaded - autosteLv2")
