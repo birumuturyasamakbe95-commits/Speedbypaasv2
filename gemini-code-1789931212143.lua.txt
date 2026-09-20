@@ -1,0 +1,1292 @@
+-- Services -------------------------------------------------------------------
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+local NetworkClient = game:GetService("NetworkClient")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local environment = if getgenv then getgenv() else _G
+local RUNTIME_KEY = "__CAPO_NIGHTHUB_ANTI_TP"
+
+-- Cleanly replace an earlier copy
+local previousRuntime = environment[RUNTIME_KEY]
+if type(previousRuntime) == "table" and type(previousRuntime.destroy) == "function" then
+    pcall(previousRuntime.destroy)
+end
+
+local runtime = {
+    alive = true,
+    enabled = false,
+    boundKey = Enum.KeyCode.Delete,
+    awaitingKey = false,
+    captureGeneration = 0,
+    character = nil,
+    rootPart = nil,
+    fakeRoot = nil,
+    repRootOwner = nil,
+    stepConnection = nil,
+    connections = {},
+    settingsRestore = {},
+
+    antiBatConn = nil,
+    freezeConn = nil,
+    flingConn = nil,
+    antiResetHealthConn = nil,
+    antiResetCFrameConn = nil,
+    lastSafeCFrame = nil,
+    lastCheckTime = 0,
+
+    scaleLevel = 1.0,
+
+    locked = false,
+    configFile = "CapoXNighthubAntiTp.json",
+}
+
+environment[RUNTIME_KEY] = runtime
+
+local ANTI_BAT_RANGE = 5
+local MIN_SCALE = 0.5
+local MAX_SCALE = 1.5
+local SCALE_STEP = 0.05
+
+-- General helpers ------------------------------------------------------------
+
+local function connect(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(runtime.connections, connection)
+    return connection
+end
+
+local function disconnect(connection)
+    if connection then
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+end
+
+local function create(className, properties, parent)
+    local object = Instance.new(className)
+    for property, value in pairs(properties or {}) do
+        object[property] = value
+    end
+    if parent then
+        object.Parent = parent
+    end
+    return object
+end
+
+local function corner(parent, radius)
+    return create("UICorner", {
+        CornerRadius = typeof(radius) == "UDim" and radius or UDim.new(0, radius),
+    }, parent)
+end
+
+local function tween(object, duration, goals)
+    local animation = TweenService:Create(
+        object,
+        TweenInfo.new(duration, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+        goals
+    )
+    animation:Play()
+    return animation
+end
+
+local function isBasePart(instance)
+    if not instance then
+        return false
+    end
+    local ok, result = pcall(function()
+        return instance:IsA("BasePart")
+    end)
+    return ok and result == true
+end
+
+local function getCurrentRoot(character)
+    character = character or LocalPlayer.Character
+    if not character then
+        return nil
+    end
+
+    local ok, root = pcall(function()
+        return character:FindFirstChild("HumanoidRootPart")
+    end)
+    if ok and isBasePart(root) then
+        return root
+    end
+    return nil
+end
+
+-- Executor compatibility -----------------------------------------------------
+
+local function findGlobalFunction(...)
+    for index = 1, select("#", ...) do
+        local name = select(index, ...)
+        local value = rawget(environment, name)
+        if type(value) == "function" then
+            return value
+        end
+    end
+    return nil
+end
+
+local function setHidden(instance, property, value)
+    if not instance then
+        return false
+    end
+
+    local setter = findGlobalFunction(
+        "sethiddenproperty",
+        "set_hidden_property",
+        "sethiddenprop",
+        "set_hidden_prop"
+    )
+    if setter then
+        local ok = pcall(setter, instance, property, value)
+        if ok then
+            return true
+        end
+    end
+
+    return pcall(function()
+        instance[property] = value
+    end)
+end
+
+local function getHidden(instance, property)
+    if not instance then
+        return false, nil
+    end
+
+    local getter = findGlobalFunction(
+        "gethiddenproperty",
+        "get_hidden_property",
+        "gethiddenprop",
+        "get_hidden_prop"
+    )
+    if getter then
+        local ok, value = pcall(getter, instance, property)
+        if ok then
+            return true, value
+        end
+    end
+
+    local ok, value = pcall(function()
+        return instance[property]
+    end)
+    return ok, value
+end
+
+-- Persistence ---------------------------------------------------------------
+
+local writefile = findGlobalFunction("writefile")
+local readfile = findGlobalFunction("readfile")
+local isfile = findGlobalFunction("isfile")
+
+local function savePosition()
+    local pos = runtime.refs and runtime.refs.main and runtime.refs.main.Position
+    if not pos then return end
+
+    local data = {
+        position = {
+            XScale = pos.X.Scale,
+            XOffset = pos.X.Offset,
+            YScale = pos.Y.Scale,
+            YOffset = pos.Y.Offset,
+        },
+        locked = runtime.locked,
+        scale = runtime.scaleLevel,
+        keybind = runtime.boundKey.Name,
+    }
+
+    local json = HttpService:JSONEncode(data)
+
+    if writefile then
+        local ok, err = pcall(writefile, runtime.configFile, json)
+        if not ok then warn("Error saving config:", err) end
+    else
+        environment.__CAPO_UI_CONFIG = json
+    end
+end
+
+local function loadPosition()
+    local json = nil
+
+    if readfile and isfile then
+        local ok, exists = pcall(isfile, runtime.configFile)
+        if ok and exists then
+            local ok2, content = pcall(readfile, runtime.configFile)
+            if ok2 then json = content end
+        end
+    end
+
+    if not json then
+        json = environment.__CAPO_UI_CONFIG
+    end
+
+    if not json then return end
+
+    local ok, data = pcall(HttpService.JSONDecode, HttpService, json)
+    if not ok or not data then return end
+
+    if data.position then
+        local posData = data.position
+        local newPos = UDim2.new(
+            posData.XScale or 0.5,
+            posData.XOffset or -150,
+            posData.YScale or 0.5,
+            posData.YOffset or -50
+        )
+        if runtime.refs and runtime.refs.main then
+            runtime.refs.main.Position = newPos
+        end
+    end
+
+    if data.locked ~= nil then
+        runtime.locked = data.locked
+        if runtime.refs and runtime.refs.lockBtn then
+            runtime.refs.lockBtn.Text = runtime.locked and "🔒" or "🔓"
+        end
+    end
+
+    if data.scale then
+        runtime.scaleLevel = data.scale
+        if runtime.refs and runtime.refs.mainScale then
+            runtime.refs.mainScale.Scale = runtime.scaleLevel
+        end
+    end
+
+    if data.keybind and type(data.keybind) == "string" then
+        local key = Enum.KeyCode[data.keybind]
+        if key and key ~= Enum.KeyCode.Unknown then
+            runtime.boundKey = key
+            if runtime.refs and runtime.refs.keybindBtn then
+                runtime.refs.keybindBtn.Text = key.Name
+            end
+        end
+    end
+end
+
+-- Physics/network setup ------------------------------------------------------
+
+local function rememberSetting(instance, property)
+    local ok, value = pcall(function()
+        return instance[property]
+    end)
+    if ok then
+        table.insert(runtime.settingsRestore, {
+            instance = instance,
+            property = property,
+            value = value,
+        })
+    end
+end
+
+local function applyPublicSetting(instance, property, value)
+    if not instance then
+        return false
+    end
+    rememberSetting(instance, property)
+    return pcall(function()
+        instance[property] = value
+    end)
+end
+
+local function configurePhysics()
+    setHidden(LocalPlayer, "MaximumSimulationRadius", math.huge)
+    setHidden(LocalPlayer, "SimulationRadius", math.huge)
+
+    pcall(function()
+        local networkSettings = settings().Network
+        applyPublicSetting(
+            networkSettings,
+            "InterpolationThrottling",
+            Enum.InterpolationThrottlingMode.Disabled
+        )
+    end)
+
+    pcall(function()
+        local physicsSettings = settings().Physics
+        applyPublicSetting(
+            physicsSettings,
+            "PhysicsEnvironmentalThrottle",
+            Enum.EnviromentalPhysicsThrottle.Disabled
+        )
+        applyPublicSetting(physicsSettings, "AllowSleep", false)
+    end)
+
+    pcall(function()
+        NetworkClient:SetOutgoingKBPSLimit(math.huge)
+    end)
+end
+
+configurePhysics()
+
+-- Replication-root runtime ---------------------------------------------------
+
+local FAKE_ROOT_NAME = "CapoDesyncRoot"
+local FAKE_ROOT_Y = -1000
+local FAKE_ROOT_VELOCITY = Vector3.new(0, -1000, 0)
+
+local function fakeRootIsUsable()
+    local fake = runtime.fakeRoot
+    if not isBasePart(fake) then
+        return false
+    end
+    local ok, parent = pcall(function()
+        return fake.Parent
+    end)
+    return ok and parent ~= nil
+end
+
+local function destroyFakeRoot()
+    local fake = runtime.fakeRoot
+    runtime.fakeRoot = nil
+    if fake then
+        pcall(function()
+            fake:Destroy()
+        end)
+    end
+end
+
+local function restoreReplicationRoot()
+    local owner = runtime.repRootOwner or runtime.rootPart
+    if isBasePart(owner) then
+        setHidden(owner, "PhysicsRepRootPart", owner)
+    end
+    runtime.repRootOwner = nil
+end
+
+local function createFakeRoot(rootPart)
+    destroyFakeRoot()
+
+    local fake = create("Part", {
+        Name = FAKE_ROOT_NAME,
+        Size = Vector3.new(2, 2, 1),
+        Anchored = true,
+        CanCollide = false,
+        CanTouch = false,
+        CanQuery = false,
+        Transparency = 1,
+        CFrame = CFrame.new(0, FAKE_ROOT_Y, 0),
+        AssemblyLinearVelocity = FAKE_ROOT_VELOCITY,
+    }, Workspace)
+
+    local ok, position = pcall(function()
+        return rootPart.Position
+    end)
+    if ok then
+        fake.CFrame = CFrame.new(position.X, FAKE_ROOT_Y, position.Z)
+    end
+
+    runtime.fakeRoot = fake
+    return fake
+end
+
+local function assignFakeReplicationRoot(rootPart, fake)
+    if not isBasePart(rootPart) or not isBasePart(fake) then
+        return false
+    end
+
+    setHidden(rootPart, "PhysicsRepRootPart", rootPart)
+    runtime.repRootOwner = rootPart
+    return setHidden(rootPart, "PhysicsRepRootPart", fake)
+end
+
+local function stepDesync()
+    if not runtime.alive or not runtime.enabled then
+        return
+    end
+
+    local root = runtime.rootPart
+    if not isBasePart(root) then
+        root = getCurrentRoot(runtime.character)
+        runtime.rootPart = root
+    end
+    if not root then
+        return
+    end
+
+    if not fakeRootIsUsable() then
+        local fake = createFakeRoot(root)
+        assignFakeReplicationRoot(root, fake)
+        return
+    end
+
+    local fake = runtime.fakeRoot
+
+    local ok, rootPosition, fakePosition = pcall(function()
+        return root.Position, fake.Position
+    end)
+    if ok and (
+        math.abs(rootPosition.X - fakePosition.X) > 0.01
+        or math.abs(rootPosition.Z - fakePosition.Z) > 0.01
+        or math.abs(fakePosition.Y - FAKE_ROOT_Y) > 0.01
+    ) then
+        pcall(function()
+            fake.CFrame = CFrame.new(rootPosition.X, FAKE_ROOT_Y, rootPosition.Z)
+        end)
+    end
+
+    pcall(function()
+        fake.Anchored = true
+        fake.AssemblyLinearVelocity = FAKE_ROOT_VELOCITY
+    end)
+
+    local gotValue, current = getHidden(root, "PhysicsRepRootPart")
+    if not gotValue or current ~= fake then
+        setHidden(root, "PhysicsRepRootPart", fake)
+    end
+end
+
+local function stopStepConnection()
+    disconnect(runtime.stepConnection)
+    runtime.stepConnection = nil
+end
+
+local function startStepConnection()
+    stopStepConnection()
+    runtime.stepConnection = RunService.Stepped:Connect(stepDesync)
+end
+
+-- ========== ANTI-BAT / FREEZE / FLING ==========
+
+local function stopAntiBat()
+    if runtime.antiBatConn then
+        runtime.antiBatConn:Disconnect()
+        runtime.antiBatConn = nil
+    end
+    runtime.lastSafeCFrame = nil
+end
+
+local function startAntiBat()
+    stopAntiBat()
+    runtime.lastSafeCFrame, runtime.lastCheckTime = nil, 0
+
+    runtime.antiBatConn = RunService.Heartbeat:Connect(function()
+        if not runtime.enabled or not runtime.alive then return end
+
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum or hum.Health <= 0 then return end
+
+        local now = tick()
+
+        local velocity = hrp.AssemblyLinearVelocity
+        if velocity.Magnitude < 70 then
+            runtime.lastSafeCFrame = hrp.CFrame
+            runtime.lastCheckTime = now
+        elseif velocity.Magnitude > 110 and runtime.lastSafeCFrame and (now - runtime.lastCheckTime) < 1.5 then
+            hrp.CFrame = runtime.lastSafeCFrame * CFrame.new(0, 0.1, 0)
+        end
+
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and plr.Character then
+                local eHrp = plr.Character:FindFirstChild("HumanoidRootPart")
+                local tool = plr.Character:FindFirstChildWhichIsA("Tool")
+                if eHrp and tool and tool.Name:lower():find("bat") then
+                    local dist = (hrp.Position - eHrp.Position).Magnitude
+                    if dist < ANTI_BAT_RANGE then
+                        local angle = math.rad(tick() * 500)
+                        hrp.CFrame = hrp.CFrame * CFrame.new(math.sin(angle) * 3, 0, math.cos(angle) * 3)
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function stopFreeze()
+    if runtime.freezeConn then
+        runtime.freezeConn:Disconnect()
+        runtime.freezeConn = nil
+    end
+end
+
+local function startFreeze()
+    stopFreeze()
+    runtime.freezeConn = RunService.Heartbeat:Connect(function()
+        if not runtime.enabled or not runtime.alive then return end
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and plr.Character then
+                local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                    hrp.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+        end
+    end)
+end
+
+local function stopFling()
+    if runtime.flingConn then
+        runtime.flingConn:Disconnect()
+        runtime.flingConn = nil
+    end
+end
+
+local function startFling()
+    stopFling()
+    runtime.flingConn = RunService.Heartbeat:Connect(function()
+        if not runtime.enabled or not runtime.alive then return end
+        local myChar = LocalPlayer.Character
+        if not myChar then return end
+        local myHrp = myChar:FindFirstChild("HumanoidRootPart")
+        if not myHrp then return end
+
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and plr.Character then
+                local eHrp = plr.Character:FindFirstChild("HumanoidRootPart")
+                if eHrp then
+                    local dist = (myHrp.Position - eHrp.Position).Magnitude
+                    if dist < ANTI_BAT_RANGE then
+                        local dir = (eHrp.Position - myHrp.Position).Unit
+                        eHrp.AssemblyLinearVelocity = dir * 150 + Vector3.new(0, 80, 0)
+                    end
+                end
+            end
+        end
+    end)
+end
+
+-- ========== ANTI-RESET / NO RESPAWN ON HIT ==========
+
+local function stopAntiReset()
+    if runtime.antiResetHealthConn then
+        runtime.antiResetHealthConn:Disconnect()
+        runtime.antiResetHealthConn = nil
+    end
+    if runtime.antiResetCFrameConn then
+        runtime.antiResetCFrameConn:Disconnect()
+        runtime.antiResetCFrameConn = nil
+    end
+end
+
+local function hookHumanoid(char)
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+
+    if runtime.antiResetHealthConn then
+        runtime.antiResetHealthConn:Disconnect()
+        runtime.antiResetHealthConn = nil
+    end
+
+    runtime.antiResetHealthConn = hum:GetPropertyChangedSignal("Health"):Connect(function()
+        if not runtime.enabled or not runtime.alive then return end
+        if hum.Health <= 0 or hum:GetState() == Enum.HumanoidStateType.Dead then
+            pcall(function()
+                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+                hum.Health = hum.MaxHealth
+            end)
+        end
+    end)
+
+    hum.Died:Connect(function()
+        if not runtime.enabled or not runtime.alive then return end
+        pcall(function() hum.Health = hum.MaxHealth end)
+    end)
+end
+
+local function startAntiReset()
+    stopAntiReset()
+
+    pcall(function()
+        Workspace.FallenPartsDestroyHeight = -math.huge
+    end)
+
+    runtime.lastSafeCFrame = runtime.lastSafeCFrame or nil
+
+    runtime.antiResetCFrameConn = RunService.Heartbeat:Connect(function()
+        if not runtime.enabled or not runtime.alive then return end
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum then return end
+
+        if hum.Health <= 0 then
+            pcall(function() hum.Health = hum.MaxHealth end)
+        end
+
+        if runtime.lastSafeCFrame then
+            local dist = (hrp.Position - runtime.lastSafeCFrame.Position).Magnitude
+            if dist > 500 then
+                pcall(function()
+                    hrp.CFrame = runtime.lastSafeCFrame
+                end)
+            else
+                runtime.lastSafeCFrame = hrp.CFrame
+            end
+        else
+            runtime.lastSafeCFrame = hrp.CFrame
+        end
+    end)
+
+    if LocalPlayer.Character then hookHumanoid(LocalPlayer.Character) end
+    connect(LocalPlayer.CharacterAdded, function(char)
+        task.wait(0.1)
+        hookHumanoid(char)
+        runtime.lastSafeCFrame = nil
+    end)
+end
+
+-- Character lifecycle --------------------------------------------------------
+
+local function bindCharacter(character)
+    local oldRoot = runtime.rootPart
+    runtime.character = character
+    runtime.rootPart = getCurrentRoot(character)
+
+    if runtime.enabled then
+        if isBasePart(oldRoot) and oldRoot ~= runtime.rootPart then
+            setHidden(oldRoot, "PhysicsRepRootPart", oldRoot)
+        end
+        destroyFakeRoot()
+
+        local root = runtime.rootPart
+        if not root and character then
+            local ok, waitedRoot = pcall(function()
+                return character:WaitForChild("HumanoidRootPart", 8)
+            end)
+            if ok and isBasePart(waitedRoot) then
+                root = waitedRoot
+                runtime.rootPart = root
+            end
+        end
+
+        if root then
+            local fake = createFakeRoot(root)
+            assignFakeReplicationRoot(root, fake)
+            startStepConnection()
+        end
+
+        startAntiBat()
+        startFreeze()
+        startFling()
+        hookHumanoid(character)
+    end
+end
+
+bindCharacter(LocalPlayer.Character)
+connect(LocalPlayer.CharacterAdded, function(character)
+    task.defer(bindCharacter, character)
+end)
+
+-- Interface palette (SARI BEYAZ & FUL SIYAH) ----------------------------------
+
+local COLORS = {
+    main = Color3.fromRGB(0, 0, 0),             -- Tam Siyah
+    row = Color3.fromRGB(10, 10, 10),           -- Koyu Siyah Alt Panel
+    track = Color3.fromRGB(25, 25, 25),         -- Buton Arka Planı
+    button = Color3.fromRGB(20, 20, 20),        -- Küçük Butonlar
+    textYellow = Color3.fromRGB(255, 220, 0),   -- Sarı
+    textWhite = Color3.fromRGB(255, 255, 255),  -- Beyaz
+    border = Color3.fromRGB(255, 220, 0),       -- Sarı Kenarlık
+}
+
+local uiParent = CoreGui
+local oldGui = uiParent:FindFirstChild("CapoXNighthubAntiTpGui")
+if oldGui then
+    oldGui:Destroy()
+end
+
+local screenGui = create("ScreenGui", {
+    Name = "CapoXNighthubAntiTpGui",
+    DisplayOrder = 999,
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, nil)
+
+local parented = pcall(function()
+    screenGui.Parent = uiParent
+end)
+if not parented then
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        or LocalPlayer:WaitForChild("PlayerGui")
+    uiParent = playerGui
+    local stale = uiParent:FindFirstChild("CapoXNighthubAntiTpGui")
+    if stale then
+        stale:Destroy()
+    end
+    screenGui.Parent = uiParent
+end
+runtime.gui = screenGui
+
+-- Main panel -----------------------------------------------------------------
+
+local main = create("Frame", {
+    Name = "Main",
+    Active = true,
+    ClipsDescendants = true,
+    BackgroundTransparency = 0,
+    BackgroundColor3 = COLORS.main,
+    BorderSizePixel = 1,
+    BorderColor3 = COLORS.border,
+    Position = UDim2.new(0.5, -150, 0.5, -50),
+    Size = UDim2.new(0, 300, 0, 100),
+}, screenGui)
+corner(main, 10)
+
+local mainScale = create("UIScale", {
+    Scale = 1,
+}, main)
+
+-- Header ---------------------------------------------------------------------
+
+local header = create("Frame", {
+    Name = "Header",
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 12, 0, 4),
+    ZIndex = 10,
+    Size = UDim2.new(1, -20, 0, 24),
+}, main)
+
+local title = create("TextLabel", {
+    Name = "Title",
+    BackgroundTransparency = 1,
+    Text = "Capo X Nighthub Anti Tp",
+    TextColor3 = COLORS.textYellow,
+    Font = Enum.Font.GothamBlack,
+    AnchorPoint = Vector2.new(0, 0),
+    Position = UDim2.new(0, 0, 0, 0),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    ZIndex = 20,
+    TextSize = 12,
+    Size = UDim2.new(0, 180, 0, 22),
+}, header)
+
+local rightButtons = create("Frame", {
+    Name = "RightButtons",
+    BackgroundTransparency = 1,
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, 0, 0, 0),
+    Size = UDim2.new(0, 120, 0, 20),
+    ZIndex = 12,
+}, header)
+
+create("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    HorizontalAlignment = Enum.HorizontalAlignment.Right,
+    VerticalAlignment = Enum.VerticalAlignment.Center,
+    Padding = UDim.new(0, 3),
+}, rightButtons)
+
+local growBtn = create("TextButton", {
+    Name = "GrowBtn",
+    AutoButtonColor = false,
+    BackgroundColor3 = COLORS.button,
+    BackgroundTransparency = 0,
+    BorderSizePixel = 0,
+    Size = UDim2.new(0, 20, 0, 20),
+    Text = "+",
+    TextColor3 = COLORS.textYellow,
+    Font = Enum.Font.GothamBlack,
+    TextSize = 14,
+    ZIndex = 12,
+}, rightButtons)
+corner(growBtn, 5)
+
+local shrinkBtn = create("TextButton", {
+    Name = "ShrinkBtn",
+    AutoButtonColor = false,
+    BackgroundColor3 = COLORS.button,
+    BackgroundTransparency = 0,
+    BorderSizePixel = 0,
+    Size = UDim2.new(0, 20, 0, 20),
+    Text = "-",
+    TextColor3 = COLORS.textYellow,
+    Font = Enum.Font.GothamBlack,
+    TextSize = 14,
+    ZIndex = 12,
+}, rightButtons)
+corner(shrinkBtn, 5)
+
+local keybindBtn = create("TextButton", {
+    Name = "KeybindBtn",
+    AutoButtonColor = false,
+    BackgroundColor3 = COLORS.button,
+    BackgroundTransparency = 0,
+    BorderSizePixel = 0,
+    Size = UDim2.new(0, 42, 0, 20),
+    Text = "Key",
+    TextColor3 = COLORS.textWhite,
+    Font = Enum.Font.GothamBlack,
+    TextSize = 9,
+    ZIndex = 12,
+}, rightButtons)
+corner(keybindBtn, 5)
+
+local lockBtn = create("TextButton", {
+    Name = "LockBtn",
+    AutoButtonColor = false,
+    BackgroundColor3 = COLORS.button,
+    BackgroundTransparency = 0,
+    BorderSizePixel = 0,
+    Size = UDim2.new(0, 20, 0, 20),
+    Text = "🔓",
+    TextColor3 = COLORS.textYellow,
+    Font = Enum.Font.GothamBlack,
+    TextSize = 12,
+    ZIndex = 12,
+}, rightButtons)
+corner(lockBtn, 5)
+
+-- Content --------------------------------------------------------------------
+
+local content = create("Frame", {
+    Name = "Content",
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 14, 0, 34),
+    ZIndex = 5,
+    Size = UDim2.new(1, -28, 1, -40),
+}, main)
+
+local toggleRow = create("Frame", {
+    Name = "ToggleRow",
+    BackgroundColor3 = COLORS.row,
+    BackgroundTransparency = 0,
+    BorderSizePixel = 1,
+    BorderColor3 = COLORS.textYellow,
+    Size = UDim2.new(1, 0, 0, 44),
+    ZIndex = 5,
+    ClipsDescendants = true,
+}, content)
+corner(toggleRow, 8)
+
+local toggleLabel = create("TextLabel", {
+    Name = "Label",
+    BackgroundTransparency = 1,
+    Text = "Capo Anti-TP",
+    TextColor3 = COLORS.textYellow,
+    Font = Enum.Font.GothamBold,
+    Position = UDim2.new(0, 12, 0, 4),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 6,
+    TextSize = 14,
+    Size = UDim2.new(1, -90, 0, 18),
+}, toggleRow)
+
+local statusLabel = create("TextLabel", {
+    Name = "Status",
+    BackgroundTransparency = 1,
+    Text = "OFF",
+    TextColor3 = COLORS.textWhite,
+    Font = Enum.Font.GothamBold,
+    Position = UDim2.new(0, 12, 0, 22),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 6,
+    TextSize = 10,
+    Size = UDim2.new(1, -90, 0, 14),
+}, toggleRow)
+
+local toggleTrack = create("Frame", {
+    Name = "Toggle",
+    AnchorPoint = Vector2.new(1, 0.5),
+    BackgroundColor3 = COLORS.track,
+    BorderSizePixel = 0,
+    Position = UDim2.new(1, -12, 0.5, 0),
+    ZIndex = 7,
+    Size = UDim2.new(0, 38, 0, 18),
+}, toggleRow)
+corner(toggleTrack, 9)
+
+local toggleKnob = create("Frame", {
+    Name = "Knob",
+    BackgroundColor3 = COLORS.textWhite,
+    BorderSizePixel = 0,
+    Size = UDim2.new(0, 12, 0, 12),
+    Position = UDim2.new(0, 3, 0, 3),
+    ZIndex = 8,
+}, toggleTrack)
+corner(toggleKnob, UDim.new(1, 0))
+
+local toggleHit = create("TextButton", {
+    Name = "ToggleHit",
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    Text = "",
+    AutoButtonColor = false,
+    ZIndex = 9,
+    Size = UDim2.new(1, 0, 1, 0),
+}, toggleRow)
+
+local creditLabel = create("TextLabel", {
+    Name = "CreditLabel",
+    BackgroundTransparency = 1,
+    Text = "by Capo",
+    TextColor3 = COLORS.textWhite,
+    Font = Enum.Font.GothamBold,
+    AnchorPoint = Vector2.new(1, 1),
+    Position = UDim2.new(1, -8, 1, -4),
+    TextXAlignment = Enum.TextXAlignment.Right,
+    TextYAlignment = Enum.TextYAlignment.Bottom,
+    ZIndex = 20,
+    TextSize = 10,
+    Size = UDim2.new(0, 60, 0, 14),
+}, main)
+
+runtime.refs = {
+    screenGui = screenGui,
+    main = main,
+    mainScale = mainScale,
+    header = header,
+    title = title,
+    content = content,
+    toggleRow = toggleRow,
+    toggleLabel = toggleLabel,
+    statusLabel = statusLabel,
+    toggleTrack = toggleTrack,
+    toggleKnob = toggleKnob,
+    toggleHit = toggleHit,
+    keybindBtn = keybindBtn,
+    shrinkBtn = shrinkBtn,
+    growBtn = growBtn,
+    creditLabel = creditLabel,
+    lockBtn = lockBtn,
+}
+
+local function updateScale()
+    mainScale.Scale = runtime.scaleLevel
+end
+
+loadPosition()
+
+-- Interface effects ----------------------------------------------------------
+
+local function ripple(row)
+    if not runtime.alive or not row or not row.Parent then
+        return
+    end
+
+    local mousePosition = UserInputService:GetMouseLocation()
+    local absolutePosition = row.AbsolutePosition
+    local absoluteSize = row.AbsoluteSize
+    local x = mousePosition.X - absolutePosition.X
+    local y = mousePosition.Y - absolutePosition.Y
+    local diameter = math.max(absoluteSize.X, absoluteSize.Y) * 1.35
+
+    local image = create("ImageLabel", {
+        Name = "Ripple",
+        BackgroundTransparency = 1,
+        Image = "rbxassetid://266543268",
+        ImageColor3 = COLORS.textYellow,
+        ImageTransparency = 0.50,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0, x, 0, y),
+        Size = UDim2.new(0, 0, 0, 0),
+        ZIndex = 30,
+    }, row)
+
+    local animation = tween(image, 0.45, {
+        Size = UDim2.new(0, diameter, 0, diameter),
+        ImageTransparency = 1,
+    })
+    animation.Completed:Connect(function()
+        if image then
+            image:Destroy()
+        end
+    end)
+end
+
+local function applyEnabledVisual(value, instant)
+    statusLabel.Text = value and "ACTIVE" or "OFF"
+    statusLabel.TextColor3 = value and COLORS.textYellow or COLORS.textWhite
+
+    local trackColor = value and COLORS.textYellow or COLORS.track
+    local knobColor = value and COLORS.main or COLORS.textWhite
+    local knobPosition = value and UDim2.new(1, -15, 0, 3)
+        or UDim2.new(0, 3, 0, 3)
+
+    if instant then
+        toggleTrack.BackgroundColor3 = trackColor
+        toggleKnob.BackgroundColor3 = knobColor
+        toggleKnob.Position = knobPosition
+    else
+        tween(toggleTrack, 0.18, { BackgroundColor3 = trackColor })
+        tween(toggleKnob, 0.18, { BackgroundColor3 = knobColor, Position = knobPosition })
+    end
+end
+
+-- Enable/disable -------------------------------------------------------------
+
+local function setEnabled(value)
+    if not runtime.alive then
+        return false
+    end
+
+    value = value == true
+    if runtime.enabled == value then
+        applyEnabledVisual(value, false)
+        return value
+    end
+
+    runtime.enabled = value
+    applyEnabledVisual(value, false)
+
+    if value then
+        local root = getCurrentRoot(runtime.character)
+        runtime.rootPart = root
+        if not root then
+            runtime.enabled = false
+            applyEnabledVisual(false, false)
+            return false
+        end
+
+        local fake = createFakeRoot(root)
+        assignFakeReplicationRoot(root, fake)
+        startStepConnection()
+
+        startAntiBat()
+        startFreeze()
+        startFling()
+        startAntiReset()
+    else
+        stopStepConnection()
+        restoreReplicationRoot()
+        destroyFakeRoot()
+
+        stopAntiBat()
+        stopFreeze()
+        stopFling()
+        stopAntiReset()
+    end
+
+    return runtime.enabled
+end
+
+local function toggleEnabled()
+    return setEnabled(not runtime.enabled)
+end
+
+connect(toggleHit.MouseButton1Click, function()
+    ripple(toggleRow)
+    toggleEnabled()
+end)
+
+-- Keybind --------------------------------------------------------------------
+
+connect(keybindBtn.MouseButton1Click, function()
+    if not runtime.alive or runtime.awaitingKey then
+        return
+    end
+
+    ripple(toggleRow)
+    runtime.awaitingKey = true
+    runtime.captureGeneration += 1
+    local generation = runtime.captureGeneration
+
+    task.spawn(function()
+        for _, text in ipairs({".", "..", "..."}) do
+            if not runtime.alive
+                or not runtime.awaitingKey
+                or generation ~= runtime.captureGeneration
+            then
+                return
+            end
+            keybindBtn.Text = text
+            task.wait(0.15)
+        end
+    end)
+end)
+
+local function isValidBindInput(input)
+    if input.KeyCode == Enum.KeyCode.Unknown then
+        return false
+    end
+    local t = input.UserInputType
+    return t == Enum.UserInputType.Keyboard
+        or t == Enum.UserInputType.Gamepad1
+        or t == Enum.UserInputType.Gamepad2
+        or t == Enum.UserInputType.Gamepad3
+        or t == Enum.UserInputType.Gamepad4
+        or t == Enum.UserInputType.Gamepad5
+        or t == Enum.UserInputType.Gamepad6
+        or t == Enum.UserInputType.Gamepad7
+        or t == Enum.UserInputType.Gamepad8
+end
+
+connect(UserInputService.InputBegan, function(input, gameProcessed)
+    if not runtime.alive then
+        return
+    end
+
+    if runtime.awaitingKey then
+        if isValidBindInput(input) then
+            if input.KeyCode ~= Enum.KeyCode.Escape then
+                runtime.boundKey = input.KeyCode
+                savePosition()
+            end
+            runtime.awaitingKey = false
+            runtime.captureGeneration += 1
+            keybindBtn.Text = runtime.boundKey.Name
+        end
+        return
+    end
+
+    if not gameProcessed and input.KeyCode == runtime.boundKey then
+        ripple(toggleRow)
+        toggleEnabled()
+    end
+end)
+
+-- Escalado -------------------------------------------------------------------
+
+connect(shrinkBtn.MouseButton1Click, function()
+    if not runtime.alive then return end
+    if runtime.scaleLevel > MIN_SCALE then
+        runtime.scaleLevel = math.max(runtime.scaleLevel - SCALE_STEP, MIN_SCALE)
+        updateScale()
+        savePosition()
+    end
+    ripple(toggleRow)
+end)
+
+connect(growBtn.MouseButton1Click, function()
+    if not runtime.alive then return end
+    if runtime.scaleLevel < MAX_SCALE then
+        runtime.scaleLevel = math.min(runtime.scaleLevel + SCALE_STEP, MAX_SCALE)
+        updateScale()
+        savePosition()
+    end
+    ripple(toggleRow)
+end)
+
+-- Candado --------------------------------------------------------------------
+
+connect(lockBtn.MouseButton1Click, function()
+    if not runtime.alive then return end
+    runtime.locked = not runtime.locked
+    lockBtn.Text = runtime.locked and "🔒" or "🔓"
+    ripple(lockBtn)
+    savePosition()
+end)
+
+-- Draggable ------------------------------------------------------------------
+
+local dragging = false
+local dragInput = nil
+local dragStart = nil
+local startPosition = nil
+
+connect(main.InputBegan, function(input)
+    if runtime.locked then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch
+    then
+        dragging = true
+        dragInput = input
+        dragStart = input.Position
+        startPosition = main.Position
+
+        local changedConnection
+        changedConnection = input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+                dragInput = nil
+                disconnect(changedConnection)
+                savePosition()
+            end
+        end)
+    end
+end)
+
+connect(main.InputChanged, function(input)
+    if runtime.locked then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    then
+        dragInput = input
+    end
+end)
+
+connect(UserInputService.InputChanged, function(input)
+    if not dragging or runtime.locked or input ~= dragInput or not dragStart or not startPosition then
+        return
+    end
+
+    local delta = input.Position - dragStart
+    main.Position = UDim2.new(
+        startPosition.X.Scale,
+        startPosition.X.Offset + delta.X,
+        startPosition.Y.Scale,
+        startPosition.Y.Offset + delta.Y
+    )
+end)
+
+-- Cleanup --------------------------------------------------------------------
+
+local function destroy()
+    if not runtime.alive then
+        return
+    end
+
+    runtime.alive = false
+    runtime.enabled = false
+    runtime.awaitingKey = false
+    runtime.captureGeneration += 1
+
+    stopStepConnection()
+    restoreReplicationRoot()
+    destroyFakeRoot()
+
+    stopAntiBat()
+    stopFreeze()
+    stopFling()
+    stopAntiReset()
+
+    for _, connection in ipairs(runtime.connections) do
+        disconnect(connection)
+    end
+    table.clear(runtime.connections)
+
+    for index = #runtime.settingsRestore, 1, -1 do
+        local entry = runtime.settingsRestore[index]
+        pcall(function()
+            entry.instance[entry.property] = entry.value
+        end)
+    end
+    table.clear(runtime.settingsRestore)
+
+    if runtime.gui then
+        pcall(function()
+            runtime.gui:Destroy()
+        end)
+    end
+
+    if environment[RUNTIME_KEY] == runtime then
+        environment[RUNTIME_KEY] = nil
+    end
+end
+
+runtime.setEnabled = setEnabled
+runtime.toggle = toggleEnabled
+runtime.step = stepDesync
+runtime.bindCharacter = bindCharacter
+runtime.setHidden = setHidden
+runtime.getHidden = getHidden
+runtime.destroy = destroy
+runtime.getBoundKey = function()
+    return runtime.boundKey
+end
+runtime.setBoundKey = function(keyCode)
+    if keyCode and keyCode ~= Enum.KeyCode.Unknown then
+        runtime.boundKey = keyCode
+        keybindBtn.Text = keyCode.Name
+        savePosition()
+        return true
+    end
+    return false
+end
+
+applyEnabledVisual(false, true)
